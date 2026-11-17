@@ -6,14 +6,15 @@ per hour from comparable past launches. For each hour h = 2..24, take the
 weighted empirical quantiles (0.05/0.25/0.5/0.75/0.95) of the comparables'
 log(viewers_h / viewers_1), weighted by similarity to the target launch:
 same console-only status, same rolling-midnight unlock, and closeness of
-hour-1 scale in log space. The median log-ratio is lightly smoothed over
-adjacent hours; the spread has a floor that widens with horizon (a random
-walk's) and a cap. The target's own pre-release category is never used as a
-launch analogue.
+hour-1 scale in log space. All five quantile levels are lightly smoothed
+over adjacent hours in log space (the tail quantiles are the noisiest
+estimates, the median alone was smoothed before); the spread has a floor
+that widens with horizon (a random walk's) and a cap. The target's own
+pre-release category is never used as a launch analogue.
 
 Leave-one-out on the 38 practice comparables: mean pinball loss on the log
 scale 0.383 vs the persistence starter's 0.930; on the console-only rolling
-analogues (the GTA VI profile) 0.196 vs 0.301.
+analogues (the GTA VI profile) 0.195 vs 0.301.
 
 Python 3.13, standard library only, no network, deterministic.
 """
@@ -43,7 +44,7 @@ W_UNL = 0.40       # weight when the unlock type differs
 SIG_SCALE = 1.2    # log-scale kernel width for hour-1 print similarity
 FLOOR_A = 0.18     # minimum 90% log half-width = FLOOR_A * sqrt(h-1)
 CAP_A = 0.45       # maximum 90% log half-width = CAP_A * sqrt(h-1)
-SMOOTH_MED = True  # 3-point moving average on the median log-ratio
+SMOOTH_ALL = True  # 3-point moving average on every quantile level (log space)
 
 
 def round2(x):
@@ -198,7 +199,6 @@ def forecast_case(case):
         hours = list(range(2, 25))
 
     out = {}
-    med_log = {}
     for h in hours:
         pairs = []
         for prof, p1c, idx in pool:
@@ -211,7 +211,6 @@ def forecast_case(case):
             pairs.append((r, weight(target_prof, prof, p1, p1c)))
         if not pairs:
             out[h] = starter_quantiles(p1, h)
-            med_log[h] = 0.0
             continue
         qs = [weighted_quantile(pairs, tau) for tau in LEVELS]
         hw = (qs[4] - qs[0]) / 2.0
@@ -224,17 +223,17 @@ def forecast_case(case):
         if hw > cap:
             med = qs[2]
             qs = [med + cap * (z / 1.6448536269514722) for z in Z]
-        med_log[h] = qs[2]
         out[h] = [max(1.0, p1 * math.exp(q)) for q in qs]
 
-    if SMOOTH_MED:
-        sm = {}
-        for h in hours:
-            vals = [med_log[hh] for hh in (h - 1, h, h + 1) if hh in med_log]
-            sm[h] = sum(vals) / len(vals)
-        for h in hours:
-            shift = sm[h] - med_log[h]
-            out[h] = [max(1.0, q * math.exp(shift)) for q in out[h]]
+    if SMOOTH_ALL:
+        # 3-point moving average on every quantile level in log space: the
+        # tail quantiles are the noisiest estimates, so they get the same
+        # treatment the median used to get alone.
+        for j in range(5):
+            lg = {h: math.log(max(1.0, out[h][j])) for h in hours}
+            for h in hours:
+                hh = [x for x in (h - 1, h, h + 1) if x in lg]
+                out[h][j] = max(1.0, math.exp(sum(lg[x] for x in hh) / len(hh)))
 
     rows = []
     for h in hours:
